@@ -1,6 +1,7 @@
 #include <iostream>
 #include <memory>
 #include <pthread.h>
+#include <signal.h>
 #include <unistd.h>
 #include <opencv2/opencv.hpp>
 #include <ifm3d/camera.h>
@@ -8,48 +9,15 @@
 #include <ifm3d/image.h>
 
 
-typedef struct thread_args {
+struct thread_args {
   	int counter;
-  	double theta;
-  	double arr_theta[5];
-  	cv::Mat src;
-  	cv::Mat dst;
-  	cv::Mat background_src;
-  	ifm3d::ImageBuffer::Ptr img;
-  	ifm3d::FrameGrabber::Ptr fg;
+  	double arr_theta[5], theta;
+  	cv::Mat src, dst, background_src;
 
   	// locks for the different threads
-  	int lck_img;
-	int lck_theta;
-	bool new_img;
-	bool new_theta;
-} args;
-
-void lock(char arg, void* a){
-
-	args *b;
-	b = (args*)a;
-
-	if (arg == 'i'){
-		b->lck_img = 0;
-	}
-	else if (arg == 't'){
-		b->lck_theta = 0;
-	}
-}
-
-void unlock(char arg, void* a){
-
-	args *b;
-	b = (args*)a;
-
-	if (arg == 'i'){
-		b->lck_img = 1;
-	}
-	else if (arg == 't'){
-		b->lck_theta = 1;
-	}
-}
+  	pthread_mutex_t img_mutex, theta_mutex;
+  	pthread_cond_t  img_cond, theta_cond;
+};
 
 void grayScale(cv::Mat &src, cv::Mat &dst) {
 	cv::Mat temp = cv::Mat(src.rows, src.cols, CV_8U);
@@ -162,195 +130,216 @@ double getRotateAngle(cv::Point2f *corners) {
 			mod = tempMod;
 		}
 	}
-	printf("theta1: %lf\n", (atan(hos / mod) * 180 / 3.14159265359));
+	//printf("theta1: %lf\n", (atan(hos / mod) * 180 / 3.14159265359));
 	return (atan(hos / mod) * 180 / 3.14159265359); // Theta
 }
 
 
 
-int StructInit(void* a){
+void* structInit(void* a){
 
-	args *b;
-	b = (args*)a;
+	std::cerr << "structInit()" << std::endl;
+	thread_args *b;
+	b = (thread_args*)a;
 
 	try
 	{
 		b->theta = 0;
 	  	b->counter = 0;
-	  	for (size_t i = 0; i < 5; ++i)
+	  	for (int i = 0; i < 5; ++i)
 	  	{
 	  		b->arr_theta[i] = 0;
 	  	}
 
 	  	auto cam = ifm3d::Camera::MakeShared();
+  	 
+	  	ifm3d::ImageBuffer::Ptr img = std::make_shared<ifm3d::ImageBuffer>();
+	 	ifm3d::FrameGrabber::Ptr fg = std::make_shared<ifm3d::FrameGrabber>(cam, ifm3d::IMG_AMP|ifm3d::IMG_CART|ifm3d::IMG_RDIS);
 
-	  	b->img = std::make_shared<ifm3d::ImageBuffer>();
-	  	b->fg = std::make_shared<ifm3d::FrameGrabber>(cam, ifm3d::IMG_AMP|ifm3d::IMG_CART|ifm3d::IMG_RDIS);
+	  	b->img_mutex = PTHREAD_MUTEX_INITIALIZER;
+	  	b->img_cond = PTHREAD_COND_INITIALIZER;
+	  	b->theta_mutex = PTHREAD_MUTEX_INITIALIZER;
+	  	b->theta_cond = PTHREAD_COND_INITIALIZER;
 
-	  	b->lck_img = 0;
-	  	b->lck_theta = 0;
-	  	b->new_theta = false;
-
-
-	  	if (! b->fg->WaitForFrame(b->img.get(), 1000)){
-      	std::cerr << "Timeout waiting for camera!" << std::endl;
-      	exit(-1);
+	  	if (! fg->WaitForFrame(img.get(), 1000)){
+      		std::cerr << "Timeout waiting for camera!" << std::endl;
+      		exit(-1);
 	    }
-	  	cv::Mat back_img = b->img->DistanceImage();
-	    grayScale(back_img, b->background_src);
 
-		return (1);
+	  	cv::Mat back_img = img->DistanceImage();
+
+	    grayScale(back_img, back_img);
+
+	    b->background_src = back_img;
+
 	}
 	catch(const char* msg)
 	{
-		return (0);
+		std::cerr << "ERROR... failed to initialize Struct variables!!" << std::endl;
+		exit(-1);
 	}
 }
 
 void* getImage(void* a){ 
-	while (true){
-		args *b;
-		b = (args*)a;
 
-		if (! b->fg->WaitForFrame(b->img.get(), 1000))
+	std::cerr << "getImage()" << std::endl;
+
+	thread_args *b;
+	b = (thread_args*)a;
+
+	auto cam = ifm3d::Camera::MakeShared();
+
+	ifm3d::ImageBuffer::Ptr img = std::make_shared<ifm3d::ImageBuffer>();
+	ifm3d::FrameGrabber::Ptr fg = std::make_shared<ifm3d::FrameGrabber>(cam, ifm3d::IMG_AMP|ifm3d::IMG_CART|ifm3d::IMG_RDIS);
+
+	while (true){
+
+		if (! fg->WaitForFrame(img.get(), 1000))
 		{
 	      	std::cerr << "Timeout waiting for camera!" << std::endl;
 	      	exit(-1);
 	    }
 	    
 	    // The locks protects shared data.
-	    lock('i', (void*) b);
-	    b->dst = b->img->DistanceImage();
-	    b->new_img = true;
-	    unlock('i', (void*) b);
+	    pthread_mutex_lock(&b->img_mutex);
+	    b->src = img->DistanceImage();
+	    pthread_mutex_unlock(&b->img_mutex);
+	    pthread_cond_signal(&b->img_cond);
 	}
 }
 
 void* amplitudeMethod(void* a){
+
+	std::cerr << "amplitudeMethod()" << std::endl;
+
+	thread_args *b;
+	b = (thread_args*)a;
+
 	while (true){
 
-		args *b;
-		b = (args*)a;
-
-		// lck_acquireImage = 0 if locked 
-		if (b->lck_img && b->new_img){
-			b->new_img = false;
-
-			cv::Mat src = b->src;
-			cv::Mat dst = b->dst;
-
-			cv::GaussianBlur(src, dst, cv::Size(5, 5), 0, 0);
-
-		    grayScale(dst, dst);
-		    cv::namedWindow("gray", cv::WINDOW_NORMAL);
-			imshow("gray", dst);
+		pthread_cond_wait(&b->img_cond, &b->img_mutex);
+		cv::Mat src = b->src;
+		cv::Mat gauss, gray, morph, thres;
 
 
-		    threshold(dst, dst, 170); // 170
-		    cv::namedWindow("binary", cv::WINDOW_NORMAL);
-			imshow("binary", dst);
+		cv::GaussianBlur(src, gauss, cv::Size(3, 3), 0, 0);
 
-		    morphing(dst, dst, 5, 5); 
-			cv::namedWindow("morph", cv::WINDOW_NORMAL);
-			imshow("morph", dst);
-			
-		    cv::RotatedRect boundingBox = getControur(dst);
+		grayScale(gauss, gray);
+		//cv::namedWindow("gray", cv::WINDOW_NORMAL);
+		//imshow("gray", gray);
 
-			// draw the rotated rect
-			cv::Point2f corners[4];
-			boundingBox.points(corners);
-			drawRect(src, src, corners, boundingBox);
+		threshold(gray, thres, 150); // 170
+		//cv::namedWindow("binary", cv::WINDOW_NORMAL);
+		//imshow("binary", thres);
 
-			cv::namedWindow("Base Image", cv::WINDOW_NORMAL);
-			imshow("Base Image", src);
-			cv::waitKey(1);
+	    morphing(thres, morph, 3, 3); 
+		//cv::namedWindow("morph", cv::WINDOW_NORMAL);
+		//imshow("morph", morph);
+		
 
-			lock('t', (void*) b);
-			b->theta = getRotateAngle(corners);
-			b->new_theta = true;
-			unlock('t', (void*) b);
-		}
+	    cv::RotatedRect boundingBox = getControur(morph);
+
+		// draw the rotated rect
+		cv::Point2f corners[4];
+		boundingBox.points(corners);
+		drawRect(src, src, corners, boundingBox);
+
+		cv::namedWindow("Base Image", cv::WINDOW_NORMAL);
+		imshow("Base Image", src);
+		cv::waitKey(1);
+
+
+		pthread_mutex_lock(&b->theta_mutex);
+
+	    b->theta = getRotateAngle(corners);
+		
+	    pthread_mutex_unlock(&b->theta_mutex);
+	    pthread_cond_signal(&b->theta_cond);
+	    
 	}
 }
 
 void* subtractionMethod(void* a){
+
+	thread_args *b;
+	b = (thread_args*)a;
+
 	while (true){
-		args *b;
-		b = (args*)a;
 		
-		// lck_acquireImage = 0 if locked 
-		if (b->lck_img && b->new_img){
-			b->new_img = false;
+		pthread_cond_wait(&b->img_cond, &b->img_mutex);
 
-			cv::Mat src = b->src;
-			cv::Mat dst = b->dst;
+		cv::Mat src = b->src;
+		cv::Mat dst = b->dst;
 			
-			cv::GaussianBlur(src, dst, cv::Size(5, 5), 0, 0);
+		cv::GaussianBlur(src, dst, cv::Size(5, 5), 0, 0);
 
-		    grayScale(dst, dst);
-		    cv::namedWindow("gray", cv::WINDOW_NORMAL);
-			imshow("gray", dst);
+	    grayScale(dst, dst);
+	    cv::namedWindow("gray", cv::WINDOW_NORMAL);
+		imshow("gray", dst);
 
-		    imgSubstractGray(b->background_src, dst, 120); //125 This is for calibrating the distance to the conveyor
-		    threshold(dst, dst, 50); // 50 good
-		    morphing(dst, dst, 9, 7); // 11, 7
+	    imgSubstractGray(b->background_src, dst, 120); //125 This is for calibrating the distance to the conveyor
+	    threshold(dst, dst, 50); // 50 good
+	    morphing(dst, dst, 9, 7); // 11, 7
 
-			cv::namedWindow("morph", cv::WINDOW_NORMAL);
-			imshow("morph", dst);
+		cv::namedWindow("morph", cv::WINDOW_NORMAL);
+		imshow("morph", dst);
 
-		    cv::RotatedRect boundingBox = getControur(dst);
+	    cv::RotatedRect boundingBox = getControur(dst);
 
-			// draw the rotated rect
-			cv::Point2f corners[4];
-			boundingBox.points(corners);
-			drawRect(src, src, corners, boundingBox);
+		// draw the rotated rect
+		cv::Point2f corners[4];
+		boundingBox.points(corners);
+		drawRect(src, src, corners, boundingBox);
 
-			cv::namedWindow("Base Image", cv::WINDOW_NORMAL);
-			imshow("Base Image", src);
-			cv::waitKey(1);
+		cv::namedWindow("Base Image", cv::WINDOW_NORMAL);
+		imshow("Base Image", src);
+		cv::waitKey(1);
 
-			lock('t', (void*) b);
-			b->theta = getRotateAngle(corners);
-			b->new_theta = true;
-			unlock('t', (void*) b);
-		}
+		pthread_mutex_lock(&b->theta_mutex);
+
+	    b->theta = getRotateAngle(corners);
+
+	    pthread_mutex_unlock(&b->theta_mutex);
+	    pthread_cond_signal(&b->theta_cond);
 	}
 }
 
 void* getThetaAvg(void* a){
+
+	std::cerr << "getThetaAvg()" << std::endl;
+
+	thread_args *b;
+	b = (thread_args*)a;
+
 	while (true){
-		args *b;
-		b = (args*)a;
 
-		if (b->lck_theta && b->new_theta){
-			b->new_theta = false;
+		pthread_cond_wait(&b->theta_cond, &b->theta_mutex);
 
-			b->arr_theta[b->counter] = b->theta;
+		b->arr_theta[b->counter] = b->theta;
 
-			b->counter++;
-			if (b->arr_theta[0] > -1 && b->arr_theta[1] > -1 && 
-				b->arr_theta[2] > -1 && b->arr_theta[3] > -1 && b->arr_theta[4] > -1)
-			{
-				int arr_size = (sizeof(b->arr_theta)/sizeof(*b->arr_theta));
+		b->counter++;
+		if (b->arr_theta[0] > -1 && b->arr_theta[1] > -1 && 
+			b->arr_theta[2] > -1 && b->arr_theta[3] > -1 && b->arr_theta[4] > -1)
+		{
+			int arr_size = (sizeof(b->arr_theta)/sizeof(*b->arr_theta));
 
-				if (b->counter == 5)
-				{
-					b->counter = 0;
-				}
-
-				int sum = 0;
-				for(int i = 0; i < arr_size -1; i++)
-				{
-		   			sum += b->arr_theta[i];
-				}
-						
-				int avg_theta = sum / (arr_size-1); 
-				printf("avg theta: %d\n", avg_theta);
-			}
-			else
+			if (b->counter == 5)
 			{
 				b->counter = 0;
 			}
+
+			int sum = 0;
+			for(int i = 0; i < arr_size -1; i++)
+			{
+	   			sum += b->arr_theta[i];
+			}
+						
+			int avg_theta = sum / (arr_size-1); 
+			printf("avg theta: %d\n", avg_theta);
+		}
+		else
+		{
+			b->counter = 0;
 		}
 	}
 }
@@ -359,47 +348,54 @@ void* getThetaAvg(void* a){
 
 int main(int argc, const char **argv)
 {
+
 	pthread_t thread_1, thread_2, thread_3;
 
-  	args *args_thread;
+  	thread_args *args = new thread_args;
 
   	// initializes the variables in the Struct
-  	if (StructInit((void*) args_thread)){
-  		std::cerr << "ERROR... failed to initialize Struct variables!!" << std::endl;
-      	exit(-1);
-  	}
-
+  	structInit((void*) args);
 
     // creates the thread for acquiring images continously
-	if (pthread_create(&thread_1, NULL, &getImage, (void*) args_thread)) {
-        printf("Error:unable to create thread_1");
+	if (pthread_create(&thread_1, NULL, &getImage, (void*) args)) {
+        std::cerr << "Error:unable to create thread_1" << std::endl;
      	exit(-1);
     }
 
+    std::cerr << "thread_1 created" << std::endl;
 	// creates the thread for image processing using the Amplitude method
 	sleep(2);
-	if (pthread_create(&thread_2, NULL, &amplitudeMethod, (void*) args_thread)) {
-        printf("Error:unable to create thread_2");
+	if (pthread_create(&thread_2, NULL, &amplitudeMethod, (void*) args)) {
+        std::cerr << "Error:unable to create thread_2" << std::endl;
+        pthread_exit(&thread_1);
+        std::cerr << "thread_1 STOPPED" << std::endl;
         exit(-1);
     }
 
     // creates the thread for image processing using the Subtraction method
 /*
 	sleep(2);
-	if (pthread_create(&thread_2, NULL, subtractionMethod, (void*) args_thread)) {
-        printf("Error:unable to create thread_2");
+	if (pthread_create(&thread_2, NULL, subtractionMethod, (void*) args)) {
+        std::cerr << "Error:unable to create thread_2" << std::endl;
         exit(-1);
     }
 */
+    std::cerr << "thread_2 created" << std::endl;
     // creates the thread for calculating the theta angle 
     sleep(2);
-	if (pthread_create(&thread_3, NULL, &getThetaAvg, (void*) args_thread)) {
-        printf("Error:unable to create thread_3");
+	if (pthread_create(&thread_3, NULL, &getThetaAvg, (void*) args)) {
+        std::cerr << "Error:unable to create thread_3" << std::endl;
+        pthread_exit(&thread_1);
+        std::cerr << "thread_1 STOPPED" << std::endl;
+        pthread_exit(&thread_2);
+        std::cerr << "thread_2 STOPPED" << std::endl;
      	exit(-1);
     }
 
-    sleep(5);
-    try{
+    std::cerr << "thread_3 created" << std::endl;
+    sleep(2);
+    try
+    {
 		///// image acquisition thread /////    	
 		pthread_join(thread_1, NULL);
 
@@ -409,18 +405,18 @@ int main(int argc, const char **argv)
 	    ///// angle processing thread /////
       	pthread_join(thread_3, NULL);
 
-      	///// keeps main thread occupied /////
-      	while (true){
-      		sleep(10);
-      	}
-
     }
-    catch(const char* msg){
+    catch(const char* msg)
+    {
     	printf("Error msg: %s\n", msg);
     	pthread_exit(&thread_1);
-    	pthread_exit(&thread_2);
+    	std::cerr << "thread_1 STOPPED" << std::endl;
+   		pthread_exit(&thread_2);
+   		std::cerr << "thread_2 STOPPED" << std::endl;
     	pthread_exit(&thread_3);
+    	std::cerr << "thread_3 STOPPED" << std::endl;
+   		exit(-1);
     }
-
+  	
   	return 0;
 }
