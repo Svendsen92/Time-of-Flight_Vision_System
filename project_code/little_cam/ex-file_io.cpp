@@ -1,5 +1,6 @@
 #include <iostream>
 #include <memory>
+#include <chrono>
 #include <opencv2/opencv.hpp>
 #include <ifm3d/camera.h>
 #include <ifm3d/fg.h>
@@ -152,6 +153,9 @@ int main(int argc, const char **argv)
     grayScale(back_img, grayBack_img);
 
     while (true){
+
+    	auto process_start = std::chrono::high_resolution_clock::now();
+
 	  	if (! fg->WaitForFrame(img.get(), 1000))
 	    {
 	      	std::cerr << "Timeout waiting for camera!" << std::endl;
@@ -162,13 +166,14 @@ int main(int argc, const char **argv)
 	    cv::Mat dist_img = img->DistanceImage();
 
 
-	    cv::GaussianBlur(dist_img, dist_img, cv::Size(5, 5), 0, 0);
+	    cv::GaussianBlur(dist_img, dist_img, cv::Size(3, 3), 0, 0);
 
 	    grayScale(dist_img, gray_img);
-	    cv::namedWindow("gray", cv::WINDOW_NORMAL);
-		imshow("gray", gray_img);
+	    //cv::namedWindow("gray", cv::WINDOW_NORMAL);
+		//imshow("gray", gray_img);
 
 	//	Image Substraction method
+/*
 	    imgSubstractGray(grayBack_img, gray_img, 120); //125 This is for calibrating the distance to the conveyor
 
 	    threshold(gray_img, binary_img, 50); // 50 good
@@ -176,16 +181,16 @@ int main(int argc, const char **argv)
 	    morphing(binary_img, morph_img, 9, 7); // 11, 7
 		cv::namedWindow("morph", cv::WINDOW_NORMAL);
 		imshow("morph", morph_img);
-
+*/
 	// Other
-	/*    threshold(gray_img, binary_img, 170); // 170
-	    cv::namedWindow("binary", cv::WINDOW_NORMAL);
-		imshow("binary", binary_img);
+	    threshold(gray_img, binary_img, 170); // 170
+	    //cv::namedWindow("binary", cv::WINDOW_NORMAL);
+		//imshow("binary", binary_img);
 
 	    morphing(binary_img, morph_img, 5, 5); 
-		cv::namedWindow("morph", cv::WINDOW_NORMAL);
-		imshow("morph", morph_img);
-	*/
+		//cv::namedWindow("morph", cv::WINDOW_NORMAL);
+		//imshow("morph", morph_img);
+	
 
 	    cv::RotatedRect boundingBox = getControur(morph_img);
 
@@ -223,6 +228,10 @@ int main(int argc, const char **argv)
 	    cv::namedWindow("Base Image", cv::WINDOW_NORMAL);
 		imshow("Base Image", dist_img);
 	    cv::waitKey(1);
+
+	    auto process_finish = std::chrono::high_resolution_clock::now();
+	    printf("image processing ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(process_finish - process_start).count());
+
 	}
 
 
