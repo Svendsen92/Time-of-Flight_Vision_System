@@ -3,6 +3,8 @@
 #include <pthread.h>
 #include <signal.h>
 #include <unistd.h>
+#include <chrono>  // for high_resolution_clock
+#include <ctime>
 #include <opencv2/opencv.hpp>
 #include <ifm3d/camera.h>
 #include <ifm3d/fg.h>
@@ -17,7 +19,21 @@ struct thread_args {
   	// locks for the different threads
   	pthread_mutex_t img_mutex, theta_mutex;
   	pthread_cond_t  img_cond, theta_cond;
+
+  	bool cam_busy;
 };
+
+void setRoI(cv::Mat &src, cv::Mat &dst, double width_scaler, double hight_scaler){
+
+	int width = int(src.cols*width_scaler);
+	int hight = int(src.rows*hight_scaler);
+
+	int x = int((src.cols-width)/2);
+	int y = int((src.rows-hight)/2);
+
+	cv::Rect RoI = cv::Rect(x, y, width, hight);
+	dst = src(RoI);
+}
 
 void grayScale(cv::Mat &src, cv::Mat &dst) {
 	cv::Mat temp = cv::Mat(src.rows, src.cols, CV_8U);
@@ -161,6 +177,8 @@ void* structInit(void* a){
 	  	b->theta_mutex = PTHREAD_MUTEX_INITIALIZER;
 	  	b->theta_cond = PTHREAD_COND_INITIALIZER;
 
+	  	b->cam_busy = false;
+
 	  	if (! fg->WaitForFrame(img.get(), 1000)){
       		std::cerr << "Timeout waiting for camera!" << std::endl;
       		exit(-1);
@@ -187,24 +205,83 @@ void* getImage(void* a){
 	thread_args *b;
 	b = (thread_args*)a;
 
+	cv::Mat src;
+
 	auto cam = ifm3d::Camera::MakeShared();
 
 	ifm3d::ImageBuffer::Ptr img = std::make_shared<ifm3d::ImageBuffer>();
 	ifm3d::FrameGrabber::Ptr fg = std::make_shared<ifm3d::FrameGrabber>(cam, ifm3d::IMG_AMP|ifm3d::IMG_CART|ifm3d::IMG_RDIS);
 
+
 	while (true){
+
+		//while (b->cam_busy){}
+
+		b->cam_busy = true;
 
 		if (! fg->WaitForFrame(img.get(), 1000))
 		{
 	      	std::cerr << "Timeout waiting for camera!" << std::endl;
 	      	exit(-1);
 	    }
-	    
+		 
+
 	    // The locks protects shared data.
 	    pthread_mutex_lock(&b->img_mutex);
-	    b->src = img->DistanceImage();
+
+		b->cam_busy = false;
+
+	    src = img->DistanceImage();
+	    setRoI(src, b->src, 0.7, 0.7);
+	    //b->src = img->DistanceImage();
+		    
 	    pthread_mutex_unlock(&b->img_mutex);
 	    pthread_cond_signal(&b->img_cond);
+	    std::cerr << "111111" << std::endl;		
+	}
+}
+
+void* getImage2(void* a){ 
+
+	std::cerr << "getImage2()" << std::endl;
+
+	thread_args *b;
+	b = (thread_args*)a;
+
+	cv::Mat src;
+
+	auto cam = ifm3d::Camera::MakeShared();
+
+	ifm3d::ImageBuffer::Ptr img = std::make_shared<ifm3d::ImageBuffer>();
+	ifm3d::FrameGrabber::Ptr fg = std::make_shared<ifm3d::FrameGrabber>(cam, ifm3d::IMG_AMP|ifm3d::IMG_CART|ifm3d::IMG_RDIS);
+
+
+	while (true){
+
+		while (b->cam_busy){}
+
+		//b->cam_busy = true;
+
+		std::cerr << "222222" << std::endl;	
+
+		if (! fg->WaitForFrame(img.get(), 1000))
+		{
+	      	std::cerr << "Timeout waiting for camera!" << std::endl;
+	      	exit(-1);
+	    }
+		 
+
+	    // The locks protects shared data.
+	    pthread_mutex_lock(&b->img_mutex);
+
+		//b->cam_busy = false;
+
+	    src = img->DistanceImage();
+	    setRoI(src, b->src, 0.7, 0.7);
+	    //b->src = img->DistanceImage();
+		    
+	    pthread_mutex_unlock(&b->img_mutex);
+	    pthread_cond_signal(&b->img_cond);	
 	}
 }
 
@@ -217,7 +294,12 @@ void* amplitudeMethod(void* a){
 
 	while (true){
 
+		auto process_start = std::chrono::high_resolution_clock::now();
+
 		pthread_cond_wait(&b->img_cond, &b->img_mutex);
+
+		//auto process_start = std::chrono::high_resolution_clock::now();
+
 		cv::Mat src = b->src;
 		cv::Mat gauss, gray, morph, thres;
 
@@ -255,7 +337,9 @@ void* amplitudeMethod(void* a){
 		
 	    pthread_mutex_unlock(&b->theta_mutex);
 	    pthread_cond_signal(&b->theta_cond);
-	    
+
+	    auto process_finish = std::chrono::high_resolution_clock::now();
+	    printf("image processing ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(process_finish - process_start).count());
 	}
 }
 
@@ -315,6 +399,8 @@ void* getThetaAvg(void* a){
 
 		pthread_cond_wait(&b->theta_cond, &b->theta_mutex);
 
+		//auto theta_start = std::chrono::high_resolution_clock::now();
+
 		b->arr_theta[b->counter] = b->theta;
 
 		b->counter++;
@@ -335,12 +421,14 @@ void* getThetaAvg(void* a){
 			}
 						
 			int avg_theta = sum / (arr_size-1); 
-			printf("avg theta: %d\n", avg_theta);
+			//printf("avg theta: %d\n", avg_theta);
 		}
 		else
 		{
 			b->counter = 0;
 		}
+		//auto theta_finish = std::chrono::high_resolution_clock::now();
+	    //printf("theta processing ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(theta_finish - theta_start).count());	 
 	}
 }
 
@@ -349,7 +437,7 @@ void* getThetaAvg(void* a){
 int main(int argc, const char **argv)
 {
 
-	pthread_t thread_1, thread_2, thread_3;
+	pthread_t thread_1, thread_2, thread_3, thread_4;
 
   	thread_args *args = new thread_args;
 
@@ -361,11 +449,18 @@ int main(int argc, const char **argv)
         std::cerr << "Error:unable to create thread_1" << std::endl;
      	exit(-1);
     }
-
     std::cerr << "thread_1 created" << std::endl;
+
+    sleep(2);
+	if (pthread_create(&thread_2, NULL, &getImage2, (void*) args)) {
+	    std::cerr << "Error:unable to create thread_1" << std::endl;
+	 	exit(-1);
+    }
+    std::cerr << "thread_2 created" << std::endl;
+
 	// creates the thread for image processing using the Amplitude method
 	sleep(2);
-	if (pthread_create(&thread_2, NULL, &amplitudeMethod, (void*) args)) {
+	if (pthread_create(&thread_3, NULL, &amplitudeMethod, (void*) args)) {
         std::cerr << "Error:unable to create thread_2" << std::endl;
         pthread_exit(&thread_1);
         std::cerr << "thread_1 STOPPED" << std::endl;
@@ -380,10 +475,10 @@ int main(int argc, const char **argv)
         exit(-1);
     }
 */
-    std::cerr << "thread_2 created" << std::endl;
+    std::cerr << "thread_3 created" << std::endl;
     // creates the thread for calculating the theta angle 
     sleep(2);
-	if (pthread_create(&thread_3, NULL, &getThetaAvg, (void*) args)) {
+	if (pthread_create(&thread_4, NULL, &getThetaAvg, (void*) args)) {
         std::cerr << "Error:unable to create thread_3" << std::endl;
         pthread_exit(&thread_1);
         std::cerr << "thread_1 STOPPED" << std::endl;
@@ -391,32 +486,15 @@ int main(int argc, const char **argv)
         std::cerr << "thread_2 STOPPED" << std::endl;
      	exit(-1);
     }
+    std::cerr << "thread_4 created" << std::endl;
+    
+    
 
-    std::cerr << "thread_3 created" << std::endl;
-    sleep(2);
-    try
-    {
-		///// image acquisition thread /////    	
-		pthread_join(thread_1, NULL);
+    pthread_join(thread_1, NULL);
+	pthread_join(thread_2, NULL);
+	pthread_join(thread_3, NULL);
+	pthread_join(thread_4, NULL);
 
-	    ///// image processing thread /////
-      	pthread_join(thread_2, NULL);
-
-	    ///// angle processing thread /////
-      	pthread_join(thread_3, NULL);
-
-    }
-    catch(const char* msg)
-    {
-    	printf("Error msg: %s\n", msg);
-    	pthread_exit(&thread_1);
-    	std::cerr << "thread_1 STOPPED" << std::endl;
-   		pthread_exit(&thread_2);
-   		std::cerr << "thread_2 STOPPED" << std::endl;
-    	pthread_exit(&thread_3);
-    	std::cerr << "thread_3 STOPPED" << std::endl;
-   		exit(-1);
-    }
   	
   	return 0;
 }
