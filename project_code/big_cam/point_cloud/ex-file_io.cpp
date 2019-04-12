@@ -450,7 +450,7 @@ void* getImage(void* a){
 	thread_args *b;
 	b = (thread_args*)a;
 
-	cv::Mat xyz;
+	cv::Mat xyz, conf;
 
 	auto cam = ifm3d::Camera::MakeShared();
 	ifm3d::ImageBuffer::Ptr img = std::make_shared<ifm3d::ImageBuffer>();
@@ -468,24 +468,20 @@ void* getImage(void* a){
 	    //auto process_start = std::chrono::high_resolution_clock::now();
 
 		xyz = img->XYZImage();
-
-		cv::Mat conf = img->ConfidenceImage();
-
-		//std::cout << "mat type: " << type2str(amp.type()) << std::endl;
-
+		conf = img->ConfidenceImage();
 
 		int width = int(xyz.cols * b->roi_width);
 		int height = int(xyz.rows * b->roi_height);
 		int x1 = int((xyz.cols - width)/2);
 		int y1 = int((xyz.rows - height)/2);
 
-		cv::Mat cloud_img = cv::Mat(height, width, CV_8U);
 		b->xyz = cv::Mat(height, width, CV_16SC3);
-		cv::Mat conf_img = cv::Mat(height, width, CV_8UC1);
+		cv::Mat xyz_img = cv::Mat(height, width, CV_16SC3);
+		cv::Mat xyz_rec = cv::Mat::zeros(cv::Size(width, height), CV_16SC3);
+		cv::Mat cloud_img = cv::Mat(height, width, CV_8U);
+		cv::Mat cloud_rec = cv::Mat::zeros(cv::Size(width, height), CV_8U);
+		cv::Mat conf_img = cv::Mat(height, width, CV_8U);
 
-
-		//std::cout << "xyz.at<cv::Vec3s>(cv::Point(352, 264))[1]: " << xyz.at<cv::Vec3s>(cv::Point(35, 35))[1] << std::endl;
-		//std::cout << "xyz.at<cv::Vec3s>(cv::Point(352, 264))[2]: " << xyz.at<cv::Vec3s>(cv::Point(35, 35))[2] << std::endl;
 
 		// The locks protects shared data.
 	    pthread_mutex_lock(&b->img_mutex);
@@ -494,8 +490,8 @@ void* getImage(void* a){
 	  	{
 			for (int y = 0; y < height; y++) 
 			{		
-				// (y = a * x + b) == (y = coeff[0] * x + coeff[1])
-				if ((b->coeff_A * xyz.at<cv::Vec3s>(cv::Point(x+x1, y+y1))[0] + b->coeff_B) < 0)
+				// This bit produces the grayscale image, which is used for object detection, based on the distance measurements
+				if ((b->coeff_A * xyz.at<cv::Vec3s>(cv::Point(x+x1, y+y1))[0] + b->coeff_B) < 0) // (y = a * x + b) == (y = coeff[0] * x + coeff[1])
 				{
 					cloud_img.at<uchar>(cv::Point(x, y)) = 0;
 				}
@@ -503,26 +499,27 @@ void* getImage(void* a){
 				{
 					cloud_img.at<uchar>(cv::Point(x, y)) = (b->coeff_A * xyz.at<cv::Vec3s>(cv::Point(x+x1, y+y1))[0] + b->coeff_B);
 				}
-				b->xyz.at<cv::Vec3s>(cv::Point(x, y)) = xyz.at<cv::Vec3s>(cv::Point(x+x1, y+y1));
+				xyz_img.at<cv::Vec3s>(cv::Point(x, y)) = xyz.at<cv::Vec3s>(cv::Point(x+x1, y+y1));
 				conf_img.at<uchar>(cv::Point(x, y)) = conf.at<uchar>(cv::Point(x+x1, y+y1));
+
+				// This bit filters out invalid pixels
+				if (cloud_img.at<uchar>(cv::Point(x, y)) < 255)
+				{
+					cloud_rec.at<uchar>(cv::Point(x, y)) = cloud_img.at<uchar>(cv::Point(x, y));
+					xyz_rec.at<cv::Vec3s>(cv::Point(x, y)) = xyz_img.at<cv::Vec3s>(cv::Point(x, y));
+				}
+				if (conf_img.at<uchar>(cv::Point(x, y)) > 0) 
+				{
+					cloud_rec.at<uchar>(cv::Point(x, y)) = cloud_rec.at<uchar>(cv::Point(x - 1, y - 1));
+					xyz_rec.at<cv::Vec3s>(cv::Point(x, y)) = xyz_rec.at<cv::Vec3s>(cv::Point(x - 1, y - 1));
+				}
 			}
 		}
 
-		b->src = cloud_img;
-		/*    
-		cv::namedWindow("conf", cv::WINDOW_NORMAL);
-		imshow("conf", conf_img);
 
-		cv::namedWindow("cloud", cv::WINDOW_NORMAL);
-		imshow("cloud", cloud_img);
+		b->xyz = xyz_rec;
+		b->src = cloud_rec;
 
-
-		imwrite("ConfidenceImage.jpeg", conf_img);
-		imwrite("cloud.png", cloud_img);
-
-		cv::waitKey(0);
-		exit(0);
-		*/
 	    pthread_mutex_unlock(&b->img_mutex);
 	    pthread_cond_signal(&b->img_cond);
 
@@ -538,13 +535,9 @@ void* pointCloudMethod(void* a){
 	thread_args *b;
 	b = (thread_args*)a;
 
-
 	//int globalCounter = 0;
 
-
 	while (true){
-
-		//auto process_start = std::chrono::high_resolution_clock::now();
 
 		pthread_cond_wait(&b->img_cond, &b->img_mutex);
 
@@ -554,27 +547,27 @@ void* pointCloudMethod(void* a){
 		cv::Mat morph, thres;
 
 		
-		threshold(src, thres, 10);
+		threshold(src, thres, 7); // 10
 		cv::namedWindow("binary", cv::WINDOW_NORMAL);
 		imshow("binary", thres);
 
-		//globalCounter++;
-	    //std::string str = std::to_string(globalCounter);
-	    //std::string binstr = str;
-	    //binstr += "_thres.png";
-	    //imwrite(binstr, thres);
+		/*
+		globalCounter++;
+	    std::string str = std::to_string(globalCounter);
+	    std::string binstr = str;
+	    binstr += "_thres.png";
+	    imwrite(binstr, thres);
+		*/
 
-
-	    morphing(thres, morph, 1, 3); 
+	    morphing(thres, morph, 9, 7); 
 		cv::namedWindow("morph", cv::WINDOW_NORMAL);
 		imshow("morph", morph);
 
-		//morph = thres;
-
-		//std::string morphstr = str;
-	    //morphstr += "_morph.png";
-	    //imwrite(morphstr, morph);
-
+		/*
+		std::string morphstr = str;
+	    morphstr += "_morph.png";
+	    imwrite(morphstr, morph);
+		*/
 
 	    cv::RotatedRect boundingBox = getControur(morph);
 
@@ -582,38 +575,33 @@ void* pointCloudMethod(void* a){
 		cv::Point2f corners[4];
 		boundingBox.points(corners);
 
-		// put in thread wait here
-
- 		//pthread_mutex_lock(&b->bin_mutex);
-		b->objCorners[0] = corners[0];
-		b->objCorners[1] = corners[1];
-		b->objCorners[2] = corners[2];
-		b->objCorners[3] = corners[3];
-		//pthread_mutex_unlock(&b->bin_mutex);
-		//pthread_cond_signal(&b->bin_cond);
-		// put in thread signal here
-
 		drawRect(src, src, corners, boundingBox);
 
 		cv::namedWindow("Base Image", cv::WINDOW_NORMAL);
 		imshow("Base Image", src);
 		cv::waitKey(1);
 
+		/*
+		std::string cloudstr = str;
+	    cloudstr += "_cloud.png";
+	    imwrite(cloudstr, src);
 
+	    printf("globalCounter: %i\n", globalCounter);
+	    char i;
+	    std::cin >> i;
+		*/
+
+		// put in thread wait here
 		pthread_mutex_lock(&b->theta_mutex);
 
-
-	    //std::string cloudstr = str;
-	    //cloudstr += "_cloud.png";
-	    //imwrite(cloudstr, src);
-
-	    //printf("globalCounter: %i\n", globalCounter);
-	    //char i;
-	    //std::cin >> i;
+		b->objCorners[0] = corners[0];
+		b->objCorners[1] = corners[1];
+		b->objCorners[2] = corners[2];
+		b->objCorners[3] = corners[3];
 
 
 	    b->theta = getRotateAngle(corners);
-	    printf("theta: %i\n", b->theta);
+	    std::cout << "theta: " << b->theta << std::endl;
 		
 	    pthread_mutex_unlock(&b->theta_mutex);
 	    pthread_cond_signal(&b->theta_cond);
@@ -740,13 +728,13 @@ int main(int argc, const char **argv)
   	sleep(2);
 	std::thread thread2(pointCloudMethod, args);
 	sleep(2);
-	std::thread thread3(getDimensions, args);
-	sleep(2);
+	//std::thread thread3(getDimensions, args);
+	//sleep(2);
 
 	// Holds the main thread until the thread has finished
 	thread1.join();
   	thread2.join();
-  	thread3.join();
+  	//thread3.join();
 
   	return 0;
 }
