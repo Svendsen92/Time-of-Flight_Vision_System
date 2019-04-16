@@ -26,8 +26,8 @@ struct thread_args {
   	cv::Mat src, dist_img, xyz;
 
   	// locks for the different threads
-  	pthread_mutex_t img_mutex, theta_mutex, bin_mutex;
-  	pthread_cond_t  img_cond, theta_cond, bin_cond;
+  	pthread_mutex_t img_mutex, theta_mutex, dimensions_mutex;
+  	pthread_cond_t  img_cond, theta_cond, dimensions_cond;
 
   	cv::Point2f objCorners[4];
 };
@@ -300,12 +300,12 @@ void* structInit(void* a){
 	  	b->coeff_B = std::atof(getParameter("coeff_B").c_str());
 	  	b->conf_dist = std::atof(getParameter("dist").c_str());
 
-	  	b->img_mutex 	= PTHREAD_MUTEX_INITIALIZER;
-	  	b->img_cond 	= PTHREAD_COND_INITIALIZER;
-	  	b->theta_mutex 	= PTHREAD_MUTEX_INITIALIZER;
-	  	b->theta_cond 	= PTHREAD_COND_INITIALIZER;
-	  	b->bin_mutex 	= PTHREAD_MUTEX_INITIALIZER;
-	  	b->bin_cond 	= PTHREAD_COND_INITIALIZER; 	
+	  	b->img_mutex 		= PTHREAD_MUTEX_INITIALIZER;
+	  	b->img_cond 		= PTHREAD_COND_INITIALIZER;
+	  	b->theta_mutex 		= PTHREAD_MUTEX_INITIALIZER;
+	  	b->theta_cond 		= PTHREAD_COND_INITIALIZER;
+	  	b->dimensions_mutex = PTHREAD_MUTEX_INITIALIZER;
+	  	b->dimensions_cond 	= PTHREAD_COND_INITIALIZER; 	
 
 	}
 	catch(const char* msg)
@@ -393,53 +393,6 @@ void drawRect(cv::Mat &src, cv::Mat &dst, cv::Point2f *corners, cv::RotatedRect 
 	dst = temp_img;
 }
 
-int getRotateAngle(cv::Point2f *corners) {
-
-	const float PI = 3.14159265359;
-	int tempMod = 0, tempHos = 0; 
-	double hyp = 0, hos = 0, mod = 0, tempHyp = 0;
-
-	for (size_t i = 0; i < (sizeof(corners)/2)-1; i++)
-	{
-		tempMod = int(corners[1 + i].y) - int(corners[0 + i].y);
-		tempHos = int(corners[1 + i].x) - int(corners[0 + i].x);
-		tempHyp = sqrt(pow(tempMod, 2) + pow(tempHos, 2));
-
-		if (tempHyp > hyp) {
-			hyp = tempHyp;
-			hos = tempHos;
-			mod = tempMod;
-		}
-	}
-
-	int angle = (atan(mod/hos) * 180 / PI);
-	return (angle);
-}
-
-
-
-std::string type2str(int type) {
-  std::string r;
-
-  uchar depth = type & CV_MAT_DEPTH_MASK;
-  uchar chans = 1 + (type >> CV_CN_SHIFT);
-
-  switch ( depth ) {
-    case CV_8U:  r = "8U"; break;
-    case CV_8S:  r = "8S"; break;
-    case CV_16U: r = "16U"; break;
-    case CV_16S: r = "16S"; break;
-    case CV_32S: r = "32S"; break;
-    case CV_32F: r = "32F"; break;
-    case CV_64F: r = "64F"; break;
-    default:     r = "User"; break;
-  }
-
-  r += "C";
-  r += (chans+'0');
-
-  return r;
-}
 
 
 
@@ -459,13 +412,13 @@ void* getImage(void* a){
 
 	while (true){
 
+		//auto get_start = std::chrono::high_resolution_clock::now();
+
 		if (! fg->WaitForFrame(img.get(), 1000))
 		{
 	      	std::cerr << "Timeout waiting for camera!" << std::endl;
 	      	exit(-1);
 	    }
-
-	    //auto process_start = std::chrono::high_resolution_clock::now();
 
 		xyz = img->XYZImage();
 		conf = img->ConfidenceImage();
@@ -523,8 +476,8 @@ void* getImage(void* a){
 	    pthread_mutex_unlock(&b->img_mutex);
 	    pthread_cond_signal(&b->img_cond);
 
-	    //auto process_finish = std::chrono::high_resolution_clock::now();
-	    //printf("get image ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(process_finish - process_start).count());
+	    //auto get_finish = std::chrono::high_resolution_clock::now();
+	    //printf("get image ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(get_finish - get_start).count());
 	}
 }
 
@@ -596,6 +549,7 @@ void* pointCloudMethod(void* a){
 
 		// put in thread wait here
 		pthread_mutex_lock(&b->theta_mutex);
+		pthread_mutex_lock(&b->dimensions_mutex);
 
 		b->objCorners[0] = corners[0];
 		b->objCorners[1] = corners[1];
@@ -603,14 +557,56 @@ void* pointCloudMethod(void* a){
 		b->objCorners[3] = corners[3];
 
 
-	    b->theta = getRotateAngle(corners);
-	    std::cout << "theta: " << b->theta << std::endl;
+	    //b->theta = getRotateAngle(corners);
+	    //std::cout << "theta: " << b->theta << std::endl;
 		
 	    pthread_mutex_unlock(&b->theta_mutex);
+	    pthread_mutex_unlock(&b->dimensions_mutex);
 	    pthread_cond_signal(&b->theta_cond);
+	    pthread_cond_signal(&b->dimensions_cond);
 
 	    //auto process_finish = std::chrono::high_resolution_clock::now();
 	    //printf("image processing ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(process_finish - process_start).count());
+	}
+}
+
+
+void* getRotateAngle(void* a) {
+
+	std::cerr << "getRotateAngle()" << std::endl;
+
+	thread_args *b;
+	b = (thread_args*)a;
+
+	const float PI = 3.14159265359;
+
+	while (true) {
+
+		pthread_cond_wait(&b->theta_cond, &b->theta_mutex);
+
+		auto process_start = std::chrono::high_resolution_clock::now();
+
+		int tempMod = 0, tempHos = 0; 
+		double hyp = 0, hos = 0, mod = 0, tempHyp = 0;
+
+		for (size_t i = 0; i < 3; i++)
+		{
+			tempMod = int(b->objCorners[1 + i].y) - int(b->objCorners[0 + i].y);
+			tempHos = int(b->objCorners[1 + i].x) - int(b->objCorners[0 + i].x);
+			tempHyp = sqrt(pow(tempMod, 2) + pow(tempHos, 2));
+
+			if (tempHyp > hyp) {
+				hyp = tempHyp;
+				hos = tempHos;
+				mod = tempMod;
+			}
+		}
+
+		b->theta = (atan(mod/hos) * 180 / PI);
+		std::cout << "theta: " << b->theta << std::endl; 
+
+		//auto process_finish = std::chrono::high_resolution_clock::now();
+	    //printf("get rotation ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(process_finish - process_start).count());
 	}
 }
 
@@ -630,6 +626,33 @@ bool inObject(cv::Point2f *corner, cv::Point2f point){
 	return (int(A) == int(A1+A2+A3));
 }
 
+double* getLengthAndWidth(double *LW, cv::Point2f *corners, double pixelLength){
+
+	double hyp[3], hos = 0, mod = 0;
+	for (int i = 0; i < 3; i++)
+	{
+		mod = int(corners[1 + i].y) - int(corners[0 + i].y) ;
+		hos = int(corners[1 + i].x) - int(corners[0 + i].x) ;
+		hyp[i] = sqrt(pow(mod, 2) + pow(hos, 2)) -2;	// -2 = boundary box offset
+	}
+	int hypLen = sizeof(hyp)/sizeof(*hyp);
+	std::sort(hyp, hyp + hypLen);
+
+	double L, W;
+	if (hyp[0] > hyp[2])
+	{
+		LW[0] = hyp[0] * pixelLength; // length
+		LW[1] = hyp[2] * pixelLength; // width
+	}
+	else
+	{
+		LW[0] = hyp[2] * pixelLength; // length
+		LW[1] = hyp[0] * pixelLength; // width
+	}
+
+	return LW;
+}
+
 void* getDimensions(void* a){
 
 	std::cerr << "getDimensions()" << std::endl;
@@ -640,26 +663,22 @@ void* getDimensions(void* a){
 	cv::Mat img, xyz, src;
 	cv::Point2f corners[4];
 
-	//const float A = 0.7498, B = 1.6624, C = -2467.8;
-	const float A = -2467.8, B = 1.6624, C = 0.7498;
-
 	int numOfPixels = 92928; //img.cols * img.rows;
+	const float A = -2467.8, B = 1.6624, C = 0.7498;
 
 
 	while (true)
 	{
-		pthread_cond_wait(&b->img_cond, &b->img_mutex);
+
+		pthread_cond_wait(&b->dimensions_cond, &b->dimensions_mutex);
+
+		//auto dim_start = std::chrono::high_resolution_clock::now();
 
 		xyz = b->xyz;
 		src = b->src;
 
-		corners[0] = b->objCorners[0];
-		corners[1] = b->objCorners[1];
-		corners[2] = b->objCorners[2];
-		corners[3] = b->objCorners[3];
 
-
-		std::vector<double> arrdist;
+		std::vector<double> vecdist;
 		int whitePixels = 0, totalPixels = 0;
 		for (int x = 0; x < xyz.cols; x++) 
 	  	{
@@ -667,17 +686,16 @@ void* getDimensions(void* a){
 			{	
 				if (inObject(b->objCorners, cv::Point2f(x,y)))
 				{
+					if ((b->conf_dist - xyz.at<cv::Vec3s>(cv::Point(x, y))[0]) > 5)
+					{
+						vecdist.push_back(b->conf_dist - xyz.at<cv::Vec3s>(cv::Point(x, y))[0]);
+					}
+
 					if (src.at<uchar>(cv::Point(x, y)) > 0)
 					{
 						whitePixels++;
 					}
 					totalPixels++;
-
-
-					if ((b->conf_dist - xyz.at<cv::Vec3s>(cv::Point(x, y))[0]) > 5)
-					{
-						arrdist.push_back(b->conf_dist - xyz.at<cv::Vec3s>(cv::Point(x, y))[0]);
-					}
 				}
 			}
 		}
@@ -689,7 +707,7 @@ void* getDimensions(void* a){
 		float pixelArea = 0;
 		if (pixelRatio > 75)
 		{
-			H = getMedian(arrdist) +5; // +5 = the offset placed on the config dist value
+			H = getMedian(vecdist) +5; // +5 = the offset placed on the config dist value
 			if (H < 0)
 			{
 				H = 0;
@@ -698,16 +716,15 @@ void* getDimensions(void* a){
 		}
 		else
 		{
-			double temp_H = 0;
-			temp_H = getMedian(arrdist) +5; // +5 = the offset placed on the config dist value
+			double temp_H = getMedian(vecdist) +5; // +5 = the offset placed on the config dist value
 			
-			std::vector<double> temp_arrdist;
-			sort(arrdist.begin(), arrdist.end());
-			for (int i = (arrdist.size()-50); i < arrdist.size(); ++i)
+			std::vector<double> temp_vecdist;
+			sort(vecdist.begin(), vecdist.end());
+			for (int i = (vecdist.size()-50); i < vecdist.size(); ++i)
 			{
-				temp_arrdist.push_back(arrdist[i]);
+				temp_vecdist.push_back(vecdist[i]);
 			}
-			H = getMedian(temp_arrdist) +5; // +5 = the offset placed on the config dist value
+			H = getMedian(temp_vecdist) +5; // +5 = the offset placed on the config dist value
 			if (H < 0)
 			{
 				H = 0;
@@ -716,33 +733,15 @@ void* getDimensions(void* a){
 		}
 		double pixelLength = sqrt(pixelArea);
 
+		double LW[2];
+		double* L_W = getLengthAndWidth(LW, b->objCorners, pixelLength);
 
-		double hyp[3] = {0}, hos = 0, mod = 0;
-		for (size_t i = 0; i < 3; i++)
-		{
-			mod = int(corners[1 + i].y) - int(corners[0 + i].y) ;
-			hos = int(corners[1 + i].x) - int(corners[0 + i].x) ;
-			hyp[i] = sqrt(pow(mod, 2) + pow(hos, 2)) -2;	// -2 = boundary box offset
-		}
-		int hypLen = sizeof(hyp)/sizeof(*hyp);
-		std::sort(hyp, hyp + hypLen);
+		//auto dim_finish = std::chrono::high_resolution_clock::now();
+	    //printf("get dimensions ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(dim_finish - dim_start).count());
 
 
-		double L, W;
-		if (hyp[0] > hyp[2])
-		{
-			L = hyp[0] * pixelLength;
-			W = hyp[2] * pixelLength;	
-		}
-		else
-		{
-			W = hyp[0] * pixelLength;
-			L = hyp[2] * pixelLength;		
-		}
-
-
-		std::cout << "\nobject length: " << std::setprecision(3) << L/10 << "cm" << std::endl;
-		std::cout << "object width: " << std::setprecision(3) << W/10 << "cm" << std::endl;		
+		std::cout << "\nobject length: " << std::setprecision(3) << L_W[0]/10 << "cm" << std::endl;
+		std::cout << "object width: " << std::setprecision(3) << L_W[1]/10 << "cm" << std::endl;		
 		std::cout << "object height: " << std::setprecision(3) << H/10 << "cm" << std::endl;
 	}
 }
@@ -770,11 +769,14 @@ int main(int argc, const char **argv)
 	sleep(2);
 	std::thread thread3(getDimensions, args);
 	sleep(2);
+	std::thread thread4(getRotateAngle, args);
+	sleep(2);
 
 	// Holds the main thread until the thread has finished
 	thread1.join();
   	thread2.join();
   	thread3.join();
+  	thread4.join();
 
   	return 0;
 }
