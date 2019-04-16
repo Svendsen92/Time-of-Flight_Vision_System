@@ -33,19 +33,19 @@ struct thread_args {
 };
 
 
-double getMedian(std::vector<double> arr){
+double getMedian(std::vector<double> vec){
 
 	double median = 0;
-	int arrLen = arr.size();
-	std::sort(arr.begin(), arr.end());
+	int vecLen = vec.size();
+	std::sort(vec.begin(), vec.end());
 
-	if (arrLen % 2 > 0)
+	if (vecLen % 2 > 0)
 	{
-		median = (arr[(arrLen+1)/2] + arr[(arrLen-1)/2])/2;	
+		median = (vec[(vecLen+1)/2] + vec[(vecLen-1)/2])/2;	
 	}
 	else
 	{
-  		median = arr[arrLen/2];
+  		median = vec[vecLen/2];
 	}
 	return median;
 }
@@ -546,8 +546,11 @@ void* pointCloudMethod(void* a){
 		cv::Mat src = b->src;
 		cv::Mat morph, thres;
 
+		//medianBlur(src, src, 3);
+		GaussianBlur(src, src, cv::Size(3,3), 0, 0, 1);
+		//blur(src, src, cv::Size(3, 3), cv::Point(-1,-1));
 		
-		threshold(src, thres, 7); // 10
+		threshold(src, thres, 5); 
 		cv::namedWindow("binary", cv::WINDOW_NORMAL);
 		imshow("binary", thres);
 
@@ -559,7 +562,7 @@ void* pointCloudMethod(void* a){
 	    imwrite(binstr, thres);
 		*/
 
-	    morphing(thres, morph, 9, 7); 
+	    morphing(thres, morph, 5, 3); 
 		cv::namedWindow("morph", cv::WINDOW_NORMAL);
 		imshow("morph", morph);
 
@@ -634,20 +637,22 @@ void* getDimensions(void* a){
 	thread_args *b;
 	b = (thread_args*)a;
 
-	cv::Mat img, xyz;
+	cv::Mat img, xyz, src;
 	cv::Point2f corners[4];
-	cv::Point2f adjustedCorners[4];
 
-	const float A = -1974.2, B = 1.32989, C = 0.9038051018;
+	//const float A = 0.7498, B = 1.6624, C = -2467.8;
+	const float A = -2467.8, B = 1.6624, C = 0.7498;
 
 	int numOfPixels = 92928; //img.cols * img.rows;
+
 
 	while (true)
 	{
 		pthread_cond_wait(&b->img_cond, &b->img_mutex);
 
 		xyz = b->xyz;
-		
+		src = b->src;
+
 		corners[0] = b->objCorners[0];
 		corners[1] = b->objCorners[1];
 		corners[2] = b->objCorners[2];
@@ -655,35 +660,69 @@ void* getDimensions(void* a){
 
 
 		std::vector<double> arrdist;
+		int whitePixels = 0, totalPixels = 0;
 		for (int x = 0; x < xyz.cols; x++) 
 	  	{
 			for (int y = 0; y < xyz.rows; y++) 
 			{	
 				if (inObject(b->objCorners, cv::Point2f(x,y)))
 				{
-					arrdist.push_back(b->conf_dist - xyz.at<cv::Vec3s>(cv::Point(x, y))[0]);
+					if (src.at<uchar>(cv::Point(x, y)) > 0)
+					{
+						whitePixels++;
+					}
+					totalPixels++;
+
+
+					if ((b->conf_dist - xyz.at<cv::Vec3s>(cv::Point(x, y))[0]) > 5)
+					{
+						arrdist.push_back(b->conf_dist - xyz.at<cv::Vec3s>(cv::Point(x, y))[0]);
+					}
 				}
 			}
 		}
 
+		int pixelRatio = double(whitePixels)/totalPixels*100;
+		//std::cout << "pixelRatio: " << pixelRatio << "%" << std::endl;
 
-		double H = getMedian(arrdist);
-		if (H < 0){
-			H = 0;
-		}		
-
-		for (size_t i = 0; i < 3; i++)
+		double H = 0;
+		float pixelArea = 0;
+		if (pixelRatio > 75)
 		{
-			adjustedCorners[i].x = xyz.at<cv::Vec3s>(corners[i])[1] + 176; // [1] = x-direction
-			adjustedCorners[i].y = xyz.at<cv::Vec3s>(corners[i])[2] + 132; // [2] = y-direction  
+			H = getMedian(arrdist) +5; // +5 = the offset placed on the config dist value
+			if (H < 0)
+			{
+				H = 0;
+			}
+			pixelArea = (A + B * (b->conf_dist - H) + float(C * pow((b->conf_dist - H), 2))) / double(numOfPixels); // pixelArea = (A + Bx + Cx²) / numOfPixels
 		}
+		else
+		{
+			double temp_H = 0;
+			temp_H = getMedian(arrdist) +5; // +5 = the offset placed on the config dist value
+			
+			std::vector<double> temp_arrdist;
+			sort(arrdist.begin(), arrdist.end());
+			for (int i = (arrdist.size()-50); i < arrdist.size(); ++i)
+			{
+				temp_arrdist.push_back(arrdist[i]);
+			}
+			H = getMedian(temp_arrdist) +5; // +5 = the offset placed on the config dist value
+			if (H < 0)
+			{
+				H = 0;
+			}
+			pixelArea = (A + B * (b->conf_dist - temp_H/2) + float(C * pow((b->conf_dist - temp_H/2), 2))) / double(numOfPixels); // pixelArea = (A + Bx + Cx²) / numOfPixels
+		}
+		double pixelLength = sqrt(pixelArea);
+
 
 		double hyp[3] = {0}, hos = 0, mod = 0;
 		for (size_t i = 0; i < 3; i++)
 		{
-			mod = adjustedCorners[1 + i].y - adjustedCorners[0 + i].y;
-			hos = adjustedCorners[1 + i].x - adjustedCorners[0 + i].x;
-			hyp[i] = sqrt(pow(mod, 2) + pow(hos, 2));
+			mod = int(corners[1 + i].y) - int(corners[0 + i].y) ;
+			hos = int(corners[1 + i].x) - int(corners[0 + i].x) ;
+			hyp[i] = sqrt(pow(mod, 2) + pow(hos, 2)) -2;	// -2 = boundary box offset
 		}
 		int hypLen = sizeof(hyp)/sizeof(*hyp);
 		std::sort(hyp, hyp + hypLen);
@@ -692,18 +731,19 @@ void* getDimensions(void* a){
 		double L, W;
 		if (hyp[0] > hyp[2])
 		{
-			L = hyp[0];
-			W = hyp[2];	
+			L = hyp[0] * pixelLength;
+			W = hyp[2] * pixelLength;	
 		}
 		else
 		{
-			W = hyp[0];
-			L = hyp[2];		
+			W = hyp[0] * pixelLength;
+			L = hyp[2] * pixelLength;		
 		}
 
-		std::cout << "\nobject length: " << L << "mm" << std::endl;
-		std::cout << "object width: " << W << "mm" << std::endl;		
-		std::cout << "object height: " << H << "mm" << std::endl;
+
+		std::cout << "\nobject length: " << std::setprecision(3) << L/10 << "cm" << std::endl;
+		std::cout << "object width: " << std::setprecision(3) << W/10 << "cm" << std::endl;		
+		std::cout << "object height: " << std::setprecision(3) << H/10 << "cm" << std::endl;
 	}
 }
 
@@ -728,13 +768,13 @@ int main(int argc, const char **argv)
   	sleep(2);
 	std::thread thread2(pointCloudMethod, args);
 	sleep(2);
-	//std::thread thread3(getDimensions, args);
-	//sleep(2);
+	std::thread thread3(getDimensions, args);
+	sleep(2);
 
 	// Holds the main thread until the thread has finished
 	thread1.join();
   	thread2.join();
-  	//thread3.join();
+  	thread3.join();
 
   	return 0;
 }
