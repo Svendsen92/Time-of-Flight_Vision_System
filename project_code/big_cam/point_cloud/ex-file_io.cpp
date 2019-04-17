@@ -395,6 +395,35 @@ void drawRect(cv::Mat &src, cv::Mat &dst, cv::Point2f *corners, cv::RotatedRect 
 
 
 
+double getXYZRec(cv::Mat &xyz, int width, int height, int x1, int y1, double conf_dist){
+
+	std::vector<double> vecXYZ_rec;
+	for (int x = 0; x < width; ++x)
+    {
+    	for (int y = 0; y < height; ++y)
+    	{
+    		if(xyz.at<cv::Vec3s>(cv::Point(x+x1, y+y1))[0] > 0)
+    		{
+    			if(xyz.at<cv::Vec3s>(cv::Point(x+x1, y+y1))[0] + 20 < conf_dist)
+    			{
+    				vecXYZ_rec.push_back(xyz.at<cv::Vec3s>(cv::Point(x+x1, y+y1))[0]);
+    			}
+    		}
+    	}
+    }
+    sort(vecXYZ_rec.begin(), vecXYZ_rec.end());
+
+
+    std::vector<double> vecXYZ_rec_median;
+    for (int i = int(vecXYZ_rec.size()/4); i < int(vecXYZ_rec.size()/1.25); ++i)
+    {
+    	vecXYZ_rec_median.push_back(vecXYZ_rec[i]);
+    }
+
+    double medianXYZ_rec = getMedian(vecXYZ_rec_median);
+    //std::cout << "medianXYZ_rec: " << medianXYZ_rec << std::endl;
+    return medianXYZ_rec;
+}
 
 void* getImage(void* a){ 
 
@@ -439,6 +468,11 @@ void* getImage(void* a){
 		// The locks protects shared data.
 	    pthread_mutex_lock(&b->img_mutex);
 
+	    // This provides the rectification value to be inputted where there are invalid pixels
+	    double medianXYZ_rec = getXYZRec(xyz, width, height, x1, y1, b->conf_dist);
+	    int medianCloud_rec = b->coeff_A * medianXYZ_rec + b->coeff_B;
+
+
 	  	for (int x = 0; x < width; x++) 
 	  	{
 			for (int y = 0; y < height; y++) 
@@ -463,8 +497,11 @@ void* getImage(void* a){
 				}
 				if (conf_img.at<uchar>(cv::Point(x, y)) > 0) 
 				{
-					cloud_rec.at<uchar>(cv::Point(x, y)) = cloud_rec.at<uchar>(cv::Point(x - 1, y - 1));
-					xyz_rec.at<cv::Vec3s>(cv::Point(x, y)) = xyz_rec.at<cv::Vec3s>(cv::Point(x - 1, y - 1));
+					//cloud_rec.at<uchar>(cv::Point(x, y)) = cloud_rec.at<uchar>(cv::Point(x - 1, y - 1));
+					//xyz_rec.at<cv::Vec3s>(cv::Point(x, y)) = xyz_rec.at<cv::Vec3s>(cv::Point(x - 1, y - 1));
+
+					cloud_rec.at<uchar>(cv::Point(x, y)) = medianCloud_rec;
+					xyz_rec.at<cv::Vec3s>(cv::Point(x, y))[0] = medianXYZ_rec;
 				}
 			}
 		}
@@ -480,6 +517,7 @@ void* getImage(void* a){
 	    //printf("get image ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(get_finish - get_start).count());
 	}
 }
+
 
 void* pointCloudMethod(void* a){
 
@@ -701,13 +739,22 @@ void* getDimensions(void* a){
 		}
 
 		int pixelRatio = double(whitePixels)/totalPixels*100;
-		//std::cout << "pixelRatio: " << pixelRatio << "%" << std::endl;
+		std::cout << "pixelRatio: " << pixelRatio << "%" << std::endl;
 
 		double H = 0;
 		float pixelArea = 0;
 		if (pixelRatio > 75)
 		{
 			H = getMedian(vecdist) +5; // +5 = the offset placed on the config dist value
+
+			//std::vector<double> temp_vecdist;
+			//sort(vecdist.begin(), vecdist.end());
+			//for (int i = (vecdist.size()-50); i < vecdist.size(); ++i)
+			//{
+			//	temp_vecdist.push_back(vecdist[i]);
+			//	std::cout << "temp_vecdist[" << i << "]: " << temp_vecdist[i] << std::endl;
+			//}
+
 			if (H < 0)
 			{
 				H = 0;
@@ -750,8 +797,7 @@ void* getDimensions(void* a){
 
 
 
-int main(int argc, const char **argv)
-{
+int main(int argc, const char **argv){
 
 	thread_args *args = new thread_args;
 
