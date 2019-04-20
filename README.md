@@ -9,11 +9,10 @@ The company has a solution that already performs this task, but since it is quit
 ### *How to get it running*
 The camera used for this project is a ifm electronics O3D303 (https://www.ifm.com/gb/en/product/O3D303) and ifm provides a developer C++ library which is used in this project. This means that there are some step to be completed in order to be able to run the application in this repository.
 
-1. Item 1
+1. Go to "https://github.com/ifm/ifm3d" and follow the installation guide that suits your system.
 1. Item 2
-1. Item 3
-   1. Item 3a
-   1. Item 3b
+   1. Item 2a
+   1. Item 2b
 
 ### *License* 
 This project is licensed under the MIT License - see the [LICENSE.md](https://github.com/Svendsen92/Machine_Vision/blob/master/LICENSE.md) file for details.
