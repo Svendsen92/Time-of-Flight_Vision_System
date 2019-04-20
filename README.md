@@ -3,7 +3,7 @@
 
 ### *Objective*
 The objective of this project is to estimate products' orientation and dimensions using a time-of-flight (ToF) camera. 
-The project is made as a Robotics Engineering, Bachelor project and is made in collaboration with a warehouse logistics company.
+The project is made as a Robotics Engineering Bachelor project, in collaboration with a warehouse logistics company.
 The company has a solution that already performs this task, but since it is quit expensive and a closed second part system they would like to explore the possibility of using a ToF camera instead since its cheaper and they can customize the software themselve. 
 
 ### *How to get it running*
