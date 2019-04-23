@@ -18,7 +18,7 @@ The camera used for this project is a ifm electronics O3D303 (https://www.ifm.co
 Now the application should be running.
 
 ### *How to use to application*
-
+In progress...
 
 ### *License* 
 This project is licensed under the MIT License - see the [LICENSE.md](https://github.com/Svendsen92/Machine_Vision/blob/master/LICENSE.md) file for details.
