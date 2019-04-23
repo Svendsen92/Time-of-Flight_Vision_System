@@ -11,7 +11,7 @@ The camera used for this project is a ifm electronics O3D303 (https://www.ifm.co
 
 1. Go to "https://github.com/ifm/ifm3d", download the repository and follow the installation guide.
 1. Download this repository.
-1. Open a terminal and navigate to the parent folder of the downloaded and run the following commands:
+1. Open a terminal and navigate to the parent folder aka "Time-of-Flight_Vision_System-master" and run the following commands:
    2. $ make
    2: $ ./main
 
