@@ -1,8 +1,7 @@
 #include <iostream>
 #include <memory>
-#include <math.h>
 #include <opencv2/opencv.hpp>
-#include <opencv2/imgproc/imgproc.hpp>
+//#include <opencv2/imgproc/imgproc.hpp>
 #include <ifm3d/camera.h>
 #include <ifm3d/fg.h>
 #include <ifm3d/image.h>
@@ -10,11 +9,8 @@
 
 #include <thread>
 #include <signal.h>
-#include <unistd.h>
-#include <stdlib.h>
 #include <chrono>  // for high_resolution_clock
-#include <fstream>
-#include <vector>
+
 
 #include "config.h"
 #include "imgProcess.h"
@@ -220,31 +216,15 @@ void* getRotateAngle(void* a) {
 	thread_args *b;
 	b = (thread_args*)a;
 
-	const float PI = 3.14159265359;
+	geometricalData geoData;
 
 	while (true) {
 
 		pthread_cond_wait(&b->theta_cond, &b->theta_mutex);
 
-		auto process_start = std::chrono::high_resolution_clock::now();
-
-		int tempMod = 0, tempHos = 0; 
-		double hyp = 0, hos = 0, mod = 0, tempHyp = 0;
-
-		for (size_t i = 0; i < 3; i++)
-		{
-			tempMod = int(b->objCorners[1 + i].y) - int(b->objCorners[0 + i].y);
-			tempHos = int(b->objCorners[1 + i].x) - int(b->objCorners[0 + i].x);
-			tempHyp = sqrt(pow(tempMod, 2) + pow(tempHos, 2));
-
-			if (tempHyp > hyp) {
-				hyp = tempHyp;
-				hos = tempHos;
-				mod = tempMod;
-			}
-		}
-
-		b->theta = (atan(mod/hos) * 180 / PI);
+		//auto process_start = std::chrono::high_resolution_clock::now();
+		
+		b->theta = geoData.getOrientation(b->objCorners);
 		std::cout << "theta: " << b->theta << std::endl; 
 
 		//auto process_finish = std::chrono::high_resolution_clock::now();
@@ -317,169 +297,3 @@ int main(int argc, const char **argv){
   	return 0;
 }
 
-
-
-/*
-void setRoI(cv::Mat &src, cv::Mat &dst, double width_scaler, double hight_scaler){
-
-	int width = int(src.cols*width_scaler);
-	int hight = int(src.rows*hight_scaler);
-
-	int x = int((src.cols-width)/2);
-	int y = int((src.rows-hight)/2);
-
-	cv::Rect RoI = cv::Rect(x, y, width, hight);
-	dst = src(RoI);
-}
-*/
-
-/*
-void* getThetaAvg(void* a){
-
-	std::cerr << "getThetaAvg()" << std::endl;
-
-	thread_args *b;
-	b = (thread_args*)a;
-
-	while (true){
-
-		auto theta_start = std::chrono::high_resolution_clock::now();
-
-		pthread_cond_wait(&b->theta_cond, &b->theta_mutex);
-
-		//auto theta_start = std::chrono::high_resolution_clock::now();
-
-		b->arr_theta[b->counter] = b->theta;
-
-		b->counter++;
-		//if (b->arr_theta[0] > -1 && b->arr_theta[1] > -1 && 
-		//	b->arr_theta[2] > -1 && b->arr_theta[3] > -1 && b->arr_theta[4] > -1)
-		if (true)
-		{
-			int arr_size = (sizeof(b->arr_theta)/sizeof(*b->arr_theta));
-
-			if (b->counter == 5)
-			{
-				b->counter = 0;
-			}
-
-			int sum = 0;
-			for(int i = 0; i < arr_size -1; i++)
-			{
-	   			sum += b->arr_theta[i];
-			}
-						
-			int avg_theta = sum / (arr_size-1); 
-			//printf("avg theta: %d\n", avg_theta);
-		}
-		else
-		{
-			b->counter = 0;
-		}
-		auto theta_finish = std::chrono::high_resolution_clock::now();
-	    printf("theta processing ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(theta_finish - theta_start).count());	 
-	}
-}
-*/
-
-/*
-int setCamParam(){
-
-	char p;
-	char *args[256], *argsSeparator = (char*)p, *paramCmd = (char*)p;
-
-	argsSeparator = ", ";
-	paramCmd = "";
-
-
-	// Initializes all the elements of args to be NULL
-	for (int i = 0; i < (sizeof(args)/sizeof(*args)-1); ++i)
-	{
-		args[i] = NULL;
-	}
-
-	// Set new parametes using json formate as see below. 
-	// Look up the parameters' names in cmd-prompt by using "$imf3d dump", 
-	// which will give you the entire list of settings.... Note some are read-only!! 
-	args[0] = "echo \'{\"Apps\":[{\"Index\":\"1\",\"Imager\":{";
-
-	// insert new parameters here... Remember to seperate the arguments using agrsSeparator:
-	args[1] = "\"ExposureTime\":\"5000\"";	
-	args[2] = argsSeparator;
-	args[3] = "\"FrameRate\":\"20\"";	
-	args[4] = argsSeparator;
-	args[5] = "\"MinimumAmplitude\":\"42\"";
-	args[6] = argsSeparator;
-	args[7] = "\"Type\":\"under5m_low\"";
-
-	// Always end with the below statement 
-	args[8] = "}}]}\' | ifm3d config";
-
-
-	// Finds the number of none-NULL elements in the array 
-	int arrLen = 0;
-	while (1){
-		if (args[arrLen] == '\0'){
-			break;
-		}
-		arrLen++;
-	}
-
-	
-	// Concatenates the parameters into one const char pointer
-	for (int i = 0; i < arrLen; ++i)
-	{
-		paramCmd = concatStr(paramCmd, args[i]);
-	}
-
-
-	//printf("paramCmd: %s\n", paramCmd);
-
-	// Tries to execute a system command to change the parameters
-	if (system(paramCmd)){
-		std::cerr << "Failed to set camera parameters!!" << std::endl;
-		return 1;
-	}
-	else
-	{
-		std::cerr << "Camera parameters were succesfully set!!" << std::endl;
-		return 0;	
-	}
-}
-*/
-
-/*
-char *concatStr(char *str1, char *str2){
-
-   char *str3 = (char *) malloc(1 + strlen(str1)+ strlen(str2));
-   strcpy(str3, str1);
-   strcat(str3, str2);
-
-   return str3;
-}
-*/
-
-/*
-std::string type2str(int type) {
-  std::string r;
-
-  uchar depth = type & CV_MAT_DEPTH_MASK;
-  uchar chans = 1 + (type >> CV_CN_SHIFT);
-
-  switch ( depth ) {
-    case CV_8U:  r = "8U"; break;
-    case CV_8S:  r = "8S"; break;
-    case CV_16U: r = "16U"; break;
-    case CV_16S: r = "16S"; break;
-    case CV_32S: r = "32S"; break;
-    case CV_32F: r = "32F"; break;
-    case CV_64F: r = "64F"; break;
-    default:     r = "User"; break;
-  }
-
-  r += "C";
-  r += (chans+'0');
-
-  return r;
-}
-*/
