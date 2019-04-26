@@ -19,6 +19,7 @@
 
 
 struct thread_args {
+	int errorFlag;
   	double theta, length, width, height;
   	cv::Mat src, xyz;
 
@@ -42,6 +43,7 @@ void* structInit(void* a) {
 
 	try
 	{
+		b->errorFlag = 0;
 		b->theta = 0;
 		b->length = 0;
 		b->width = 0;
@@ -290,7 +292,9 @@ void* dataTransfer(void* a) {
 
 	tcp_ip t;
 	int port = 12345;
-	bool tcpFailure = true;
+	std::string serAddress = "server address";
+
+	t.setSocket(serAddress, port);
 
 	while (true)
 	{
@@ -307,20 +311,23 @@ void* dataTransfer(void* a) {
 		data += "width: ";
 		data += std::to_string(b->width) + ", ";
 		data += "height: ";
-		data += std::to_string(b->height);
+		data += std::to_string(b->height); + ", ";
+		data += "errorFlag: ";
+		data += std::to_string(b->errorFlag);
 
-		while (tcpFailure) 
+		for (int i = 1; i < 6; ++i)
 		{
-			t.sendData(data, port);
+		
+			t.sendData(data);
 
 			if (t.tcpSuccess)
 			{
-				tcpFailure = false;
 				std::cout << "data has been sent" << std::endl;
+				i = 6;
 			}
 			else
 			{
-				log.write('e', "In dataTransfer()... failed to send the data");
+				log.write('e', "In dataTransfer()... " + std::to_string(i) + " failed attempt to send the data");
 				std::cout << "failed to send the data" << std::endl;	
 			}
 		}			
