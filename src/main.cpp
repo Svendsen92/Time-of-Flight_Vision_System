@@ -2,10 +2,8 @@
 #include <memory>
 #include <thread>
 #include <signal.h>
-#include <chrono>  // for high_resolution_clock
 
 #include <opencv2/opencv.hpp>
-//#include <opencv2/imgproc/imgproc.hpp>
 #include <ifm3d/camera.h>
 #include <ifm3d/fg.h>
 #include <ifm3d/image.h>
@@ -16,6 +14,7 @@
 #include "imgConstruct.h"
 #include "tcp_ip.h"
 #include "logger.h"
+#include "writeCSV.h"
 
 
 struct thread_args {
@@ -98,105 +97,77 @@ void* getImage(void* a) {
 	log.write('m', "roi_height: " + std::to_string(roi_height));
 	log.write('m', "conf_dist: " + std::to_string(conf_dist));
 
-	while (true){
 
-		//auto get_start = std::chrono::high_resolution_clock::now();
-
-		if (! fg->WaitForFrame(img.get(), 1000))
+	while (true)
+	{
+		if (fg->WaitForFrame(img.get(), 1000))
 		{
-			log.write('e', "In getImage()... Timeout waiting for camera!");
-	      	std::cout << "Timeout waiting for camera!" << std::endl;
-	      	exit(-1);
-	    }
 
-		xyz = img->XYZImage();
-		conf = img->ConfidenceImage();
+			xyz = img->XYZImage();
+			conf = img->ConfidenceImage();
+			
+			construct.generateImage(xyz, conf, coeff, conf_dist, roi_width, roi_height);
 
+			// The locks protects shared data.
+		    pthread_mutex_lock(&b->img_mutex);
 
-		// The locks protects shared data.
-    	pthread_mutex_lock(&b->img_mutex);
+			b->xyz = cv::Mat(construct.xyz_rec.rows, construct.xyz_rec.cols, CV_16SC3);
+			b->xyz = construct.xyz_rec;
+			b->src = construct.cloud_rec;
+			
+		    pthread_mutex_unlock(&b->img_mutex);
+		    pthread_cond_signal(&b->img_cond);
 
-    	construct.generateImage(xyz, conf, coeff, conf_dist, roi_width, roi_height);
-
-		b->xyz = cv::Mat(construct.xyz_rec.rows, construct.xyz_rec.cols, CV_16SC3);
-		b->xyz = construct.xyz_rec;
-		b->src = construct.cloud_rec;
-
-	    pthread_mutex_unlock(&b->img_mutex);
-	    pthread_cond_signal(&b->img_cond);
-
-	    //auto get_finish = std::chrono::high_resolution_clock::now();
-	    //printf("get image ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(get_finish - get_start).count());
+		}
+		else
+		{
+			log.write('m', "In getImage()... Waiting for trigger signal!");
+	      	//std::cout << "In getImage()... Waiting for trigger signal!" << std::endl;
+	      	//exit(-1);
+		}			    
 	}
 }
 
-void* pointCloudMethod(void* a) {
+void* imageProcessing(void* a) {
 
-	std::cout << "pointCloudMethod()" << std::endl;
+	std::cout << "imageProcessing()" << std::endl;
 
 	thread_args *b;
 	b = (thread_args*)a;
 
 	imgProcess img;
 
-	//int globalCounter = 0;
+	cv::Mat src, thres, morph;
 
 	while (true){
 
 		pthread_cond_wait(&b->img_cond, &b->img_mutex);
 
-		//auto process_start = std::chrono::high_resolution_clock::now();
+		src = b->src;
+		cv::Point2f corners[4];
 
-		cv::Mat src = b->src;
-		cv::Mat morph, thres;
 
-		//medianBlur(src, src, 3);
-		GaussianBlur(src, src, cv::Size(3,3), 0, 0, 1);
-		//blur(src, src, cv::Size(3, 3), cv::Point(-1,-1));
-		
-		img.threshold(src, thres, 5); 
+		img.threshold(src, thres, 10);  
 		cv::namedWindow("binary", cv::WINDOW_NORMAL);
+		imwrite("thres_image.png", thres);
 		imshow("binary", thres);
-
-		/*
-		globalCounter++;
-	    std::string str = std::to_string(globalCounter);
-	    std::string binstr = str;
-	    binstr += "_thres.png";
-	    imwrite(binstr, thres);
-		*/
-
-	    img.morphing(thres, morph, 5, 3); 
-		cv::namedWindow("morph", cv::WINDOW_NORMAL);
+			
+	    img.morphing(thres, morph, 17); 
+	    cv::namedWindow("morph", cv::WINDOW_NORMAL);
+		imwrite("morph_image.png", morph);
 		imshow("morph", morph);
-
-		/*
-		std::string morphstr = str;
-	    morphstr += "_morph.png";
-	    imwrite(morphstr, morph);
-		*/
 
 	    cv::RotatedRect boundingBox = img.getControur(morph);
 
 		// draw the rotated rect
-		cv::Point2f corners[4];
 		boundingBox.points(corners);
-
 		img.drawRect(src, src, corners, boundingBox);
 
 		cv::namedWindow("Base Image", cv::WINDOW_NORMAL);
+		imwrite("base_image.png", src);
 		imshow("Base Image", src);
 		cv::waitKey(1);
 
-		/*
-		std::string cloudstr = str;
-	    cloudstr += "_cloud.png";
-	    imwrite(cloudstr, src);
-
-	    printf("globalCounter: %i\n", globalCounter);
-	    char i;
-	    std::cin >> i;
-		*/
 
 		// put in thread wait here
 		pthread_mutex_lock(&b->theta_mutex);
@@ -212,8 +183,6 @@ void* pointCloudMethod(void* a) {
 	    pthread_cond_signal(&b->theta_cond);
 	    pthread_cond_signal(&b->dimensions_cond);
 
-	    //auto process_finish = std::chrono::high_resolution_clock::now();
-	    //printf("image processing ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(process_finish - process_start).count());
 	}
 }
 
@@ -229,16 +198,12 @@ void* getRotateAngle(void* a) {
 	while (true) {
 
 		pthread_cond_wait(&b->theta_cond, &b->theta_mutex);
-
-		//auto process_start = std::chrono::high_resolution_clock::now();
 		
 		b->theta = geoData.getOrientation(b->objCorners);
-		std::cout << "theta: " << int(b->theta) << std::endl; 
-
+		std::cout << "theta: " << std::setprecision(3) << b->theta << std::endl;
+		
 		pthread_cond_signal(&b->thetaTrans_cond);
 
-		//auto process_finish = std::chrono::high_resolution_clock::now();
-	    //printf("get rotation ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(process_finish - process_start).count());
 	}
 }
 
@@ -252,14 +217,109 @@ void* getDimensions(void* a) {
 	config c;
 	geometricalData geoData;
 
-	double conf_dist = std::atof(c.getParameter("dist").c_str());
+	double conf_dist = std::atof(c.getParameter("dist").c_str()) +5;
+	
 
 	while (true)
 	{
 
 		pthread_cond_wait(&b->dimensions_cond, &b->dimensions_mutex);
 
-		//auto dim_start = std::chrono::high_resolution_clock::now();
+		double LWH[3];
+		double* L_W_H = geoData.getDimensions(b->xyz, b->src, LWH, b->objCorners, conf_dist);
+
+		b->length = L_W_H[0];
+		b->width = L_W_H[1];
+		b->height = L_W_H[2];
+
+		std::cout << "object length: " << std::setprecision(3) << b->length / 10 << "cm" << std::endl;
+		std::cout << "object width: " << std::setprecision(3) << b->width / 10 << "cm" << std::endl;		
+		std::cout << "object height: " << std::setprecision(3) << b->height / 10 << "cm\n" << std::endl;
+		
+
+		pthread_cond_signal(&b->dimensionsTrans_cond);
+
+	}
+}
+
+
+
+void* getGeometricalData(void* a) {
+
+	thread_args *b;
+	b = (thread_args*)a;
+
+	config c;
+	double conf_dist = std::atof(c.getParameter("dist").c_str()) +5;
+
+	geometricalData geoData;
+
+	int numOfProducts = 5;
+	int sampleSize = 10;
+	
+	writeCSV thetaCSV("T3-25-06_80m_dynamic_-51angle.csv");
+
+	std::string thetaStr = "";
+	thetaStr += "Water_Bottles,";
+	thetaStr += "Lenor_pulver,";
+	//thetaStr += "Gillette,";
+	//thetaStr += "Adez_Soy,";
+	thetaStr += "Cola_1.5L,";
+	//thetaStr += "Freeway,";
+	thetaStr += "Granini_juice,";
+	//thetaStr += "Tonic_water,";
+	//thetaStr += "Bleer,";
+	thetaStr += "Pizza_sauce,";
+	//thetaStr += "Edgel_salad,";
+	//thetaStr += "Benco,";
+	thetaStr += "\n";
+
+	thetaCSV.write(thetaStr);
+
+	double csvTheta[numOfProducts][sampleSize];
+	std::string ThetaCsvStr = "";
+
+
+
+
+	writeCSV dimCSV("T3-25-06_80m_dimensions_-51.csv");
+
+	std::string dimStr = "";
+	dimStr += "Water_Bottles Length,Water_Bottles Width,Water_Bottles Height,";
+	dimStr += "Lenor_pulver Length,Lenor_pulver Width,Lenor_pulver Height,";
+	//dimStr += "Gillette Length,Gillette Width,Gillette Height,";
+	//dimStr += "Adez_Soy Length,Adez_Soy Width,Adez_Soy Height,";
+	dimStr += "Cola_1.5L Length,Cola_1.5L Width,Cola_1.5L Height,";
+	//dimStr += "Freeway Length,Freeway Width,Freeway Height,";
+	dimStr += "Granini_juice Length,Granini_juice Width,Granini_juice Height,";
+	//dimStr += "Tonic_water Length,Tonic_water Width,Tonic_water Height,";
+	//dimStr += "Bleer Length,Bleer Width,Bleer Height,";
+	dimStr += "Pizza_sauce Length,Pizza_sauce Width,Pizza_sauce Height,";
+	//dimStr += "Edgel_salad Length,Edgel_salad Width,Edgel_salad Height,";
+	//dimStr += "Benco Length,Benco Width,Benco Height,";
+	dimStr += "\n";
+	
+	dimCSV.write(dimStr);
+
+	double csvLength[numOfProducts][sampleSize];
+	double csvWidth[numOfProducts][sampleSize];
+	double csvHeight[numOfProducts][sampleSize];
+	std::string dimCsvStr = "";
+
+
+	int counter = 0;
+	int cnt = 0;
+
+
+	while (true) {
+
+		pthread_cond_wait(&b->theta_cond, &b->theta_mutex);
+
+		
+		b->theta = geoData.getOrientation(b->objCorners) +1;
+		std::cout << "theta: " << std::setprecision(3) << b->theta << std::endl;
+		csvTheta[cnt][counter] = b->theta;
+
 
 
 		double LWH[3];
@@ -269,15 +329,48 @@ void* getDimensions(void* a) {
 		b->width = L_W_H[1];
 		b->height = L_W_H[2];
 
-		pthread_cond_signal(&b->dimensionsTrans_cond);
-
-		//auto dim_finish = std::chrono::high_resolution_clock::now();
-	    //printf("get dimensions ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(dim_finish - dim_start).count());
-
-
-		std::cout << "\nobject length: " << std::setprecision(3) << b->length / 10 << "cm" << std::endl;
+		std::cout << "object length: " << std::setprecision(3) << b->length / 10 << "cm" << std::endl;
 		std::cout << "object width: " << std::setprecision(3) << b->width / 10 << "cm" << std::endl;		
-		std::cout << "object height: " << std::setprecision(3) << b->height / 10 << "cm" << std::endl;
+		std::cout << "object height: " << std::setprecision(3) << b->height / 10 << "cm\n" << std::endl;
+		
+		csvLength[cnt][counter] = b->length;
+		csvWidth[cnt][counter] = b->width;
+		csvHeight[cnt][counter] = b->height; 
+
+
+		counter++;
+		if (counter == sampleSize)
+		{ 
+			std::cout << "Put in new product no." << cnt+2 << "\n";
+			char c;
+			sleep(30);
+			std::cin >> c;
+
+			cnt++;
+			counter = 0;
+			if (cnt+1 > numOfProducts) 
+			{	
+				int j;
+				for (int i = 0; i < sampleSize; ++i)
+				{
+					for (j = 0; j < numOfProducts-1; ++j)
+					{
+						ThetaCsvStr += std::to_string(csvTheta[j][i]) + ",";
+						dimCsvStr += std::to_string(csvLength[j][i]) + ",";
+						dimCsvStr += std::to_string(csvWidth[j][i]) + ",";
+						dimCsvStr += std::to_string(csvHeight[j][i]) + ",";
+					}
+					ThetaCsvStr += std::to_string(csvTheta[j][i]) + ",\n";
+					dimCsvStr += std::to_string(csvLength[j][i]) + ",";
+					dimCsvStr += std::to_string(csvWidth[j][i]) + ",";
+					dimCsvStr += std::to_string(csvHeight[j][i]) + ",\n";
+				}
+				thetaCSV.write(ThetaCsvStr);
+				dimCSV.write(dimCsvStr);
+				exit(0);
+			}
+		}
+		pthread_cond_signal(&b->thetaTrans_cond);
 	}
 }
 
@@ -300,8 +393,6 @@ void* dataTransfer(void* a) {
 	{
 		pthread_cond_wait(&b->thetaTrans_cond, &b->thetaTrans_mutex);
 		pthread_cond_wait(&b->dimensionsTrans_cond, &b->dimensionsTrans_mutex);
-
-		//auto dim_start = std::chrono::high_resolution_clock::now();
 
 		std::string data;
 		data = "theta: ";
@@ -331,9 +422,6 @@ void* dataTransfer(void* a) {
 				std::cout << "failed to send the data" << std::endl;	
 			}
 		}			
-
-		//auto dim_finish = std::chrono::high_resolution_clock::now();
-	    //printf("get dimensions ms: %d\n", std::chrono::duration_cast<std::chrono::milliseconds>(dim_finish - dim_start).count());
 	}
 }
 
@@ -349,22 +437,24 @@ int main(int argc, const char **argv){
   	// Starts the threads
   	std::thread thread1(getImage, args);
   	sleep(2);
-	std::thread thread2(pointCloudMethod, args);
+	std::thread thread2(imageProcessing, args);
 	sleep(2);
-	std::thread thread3(getDimensions, args);
-	sleep(2);
+	//std::thread thread3(getDimensions, args);
+	//sleep(2);
 	std::thread thread4(getRotateAngle, args);
 	sleep(2);
-	//std::thread thread5(dataTransfer, args);
+	///std::thread thread5(getGeometricalData, args);
+	///sleep(2);
+	//std::thread thread6(dataTransfer, args);
 	//sleep(2);
 
 	// Holds the main thread until the thread has finished
 	thread1.join();
   	thread2.join();
-  	thread3.join();
+  	//thread3.join();
   	thread4.join();
-  	//thread5.join();
+  	///thread5.join();
+  	//thread6.join();
 
   	return 0;
 }
-

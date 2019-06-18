@@ -37,8 +37,8 @@ double imgConstruct::getXYZRec_(cv::Mat &xyz, double conf_dist) {
     		}
     	}
     }
+    
     sort(vecXYZ_rec.begin(), vecXYZ_rec.end());
-
 
     std::vector<double> vecXYZ_rec_median;
     for (int i = int(vecXYZ_rec.size()/4); i < int(vecXYZ_rec.size()/1.25); ++i)
@@ -56,8 +56,8 @@ void imgConstruct::generateImage(cv::Mat &xyz, cv::Mat &conf, double *coeff, dou
 
 	width_ = int(xyz.cols * roi_width);
 	height_ = int(xyz.rows * roi_height);
-	x1_ = int((xyz.cols - width_)/2);
-	y1_ = int((xyz.rows - height_)/2);
+	x1_ = int((xyz.cols - width_) / 2);
+	y1_ = int((xyz.rows - height_) / 2);
 
 
 	cv::Mat xyz_img = cv::Mat(height_, width_, CV_16SC3);
@@ -69,8 +69,8 @@ void imgConstruct::generateImage(cv::Mat &xyz, cv::Mat &conf, double *coeff, dou
 
     // This provides the rectification value to be inputted where there are invalid pixels
     double medianXYZ_rec = getXYZRec_(xyz, conf_dist);
-    int medianCloud_rec = coeff[0] * medianXYZ_rec + coeff[1]; ///////////////
-
+    //int medianCloud_rec = coeff[0] * medianXYZ_rec + coeff[1]; 
+    int medianCloud_rec = 0;
 
   	for (int x = 0; x < width_; x++) 
   	{

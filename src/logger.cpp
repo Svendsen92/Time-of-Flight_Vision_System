@@ -28,7 +28,7 @@ std::string logger::getTimeStamp_() {
    // convert now to string form
    char* dt = ctime(&now);
 
-   std::cout << "The local date and time is: " << dt << std::endl;
+   //std::cout << "The local date and time is: " << dt << std::endl;
    return dt;
 }
 
