@@ -24,7 +24,7 @@ class imgConstruct
 
         cv::Mat xyz_rec;
         cv::Mat cloud_rec;
-        
+       
 };
 
 #endif
